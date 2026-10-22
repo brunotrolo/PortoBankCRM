@@ -1,0 +1,132 @@
+# =============================================================================
+# Porto Bank CRM — Docker Compose Local (Desenvolvimento Completo)
+# =============================================================================
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: porto-bank-crm-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: porto_bank_crm
+    ports:
+      - "5432:5432"
+    volumes:
+      - porto-bank-crm-postgres-data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d porto_bank_crm"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - porto-bank-crm-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: porto-bank-crm-redis
+    command: redis-server --save "" --appendonly no
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - porto-bank-crm-network
+
+  localstack:
+    image: localstack/localstack:latest
+    container_name: porto-bank-crm-localstack
+    environment:
+      SERVICES: s3,dynamodb,sqs,secretsmanager,kms
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: sa-east-1
+      DEFAULT_REGION: sa-east-1
+    ports:
+      - "4566:4566"
+    volumes:
+      - "./.localstack:/var/lib/localstack"
+      - "/var/run/docker.sock:/var/run/docker.sock"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - porto-bank-crm-network
+
+  api:
+    build:
+      context: ./packages/backend
+      dockerfile: Dockerfile
+    container_name: porto-bank-crm-api
+    env_file:
+      - ./packages/backend/.env
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/porto_bank_crm
+      REDIS_URL: redis://redis:6379
+      AWS_ENDPOINT_URL: http://localstack:4566
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+    networks:
+      - porto-bank-crm-network
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ./packages/backend
+      dockerfile: Dockerfile.worker
+    container_name: porto-bank-crm-worker
+    env_file:
+      - ./packages/backend/.env
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/porto_bank_crm
+      REDIS_URL: redis://redis:6379
+      AWS_ENDPOINT_URL: http://localstack:4566
+      WORKER_MODE: true
+    command: ["node", "dist/worker/main.js"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+    networks:
+      - porto-bank-crm-network
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./packages/frontend
+      dockerfile: Dockerfile
+    container_name: porto-bank-crm-frontend
+    env_file:
+      - ./packages/frontend/.env
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:3000
+    ports:
+      - "3001:3000"
+    depends_on:
+      api:
+        condition: service_started
+    networks:
+      - porto-bank-crm-network
+    restart: unless-stopped
+
+volumes:
+  porto-bank-crm-postgres-data:
+
+networks:
+  porto-bank-crm-network:
+    driver: bridge
